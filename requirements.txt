@@ -5,3 +5,4 @@ langchain_core
 faiss-cpu
 streamlit
 tavily-python
+langchain_groq
