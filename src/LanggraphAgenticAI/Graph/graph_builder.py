@@ -3,6 +3,7 @@ from src.LanggraphAgenticAI.state.state import State
 from src.LanggraphAgenticAI.nodes.basic_chatbot_node import BasicChatbotNode
 from src.LanggraphAgenticAI.tools.search_tool import get_tools, create_tool_node
 from langgraph.prebuilt import tools_condition,ToolNode
+from src.LanggraphAgenticAI.nodes.chatbot_with_tool_node import ChatbotWithToolNode
 
 class GraphBuilder:
     def __init__(self, model):
@@ -37,9 +38,11 @@ class GraphBuilder:
         ## Define the LLM
         llm=self.llm
         ## Define the chatbot node
+        chatbot_with_tool_node=ChatbotWithToolNode(llm)
+        chatbot_node=chatbot_with_tool_node.create_chatbot(tools)
         
         ## Add nodes
-        self.graph_builder.add_node("chatbot","")
+        self.graph_builder.add_node("chatbot",chatbot_node)
         self.graph_builder.add_node("tools",tool_node)
         ## Define conditional and direct edges
         self.graph_builder.add_edge(START, "chatbot")
