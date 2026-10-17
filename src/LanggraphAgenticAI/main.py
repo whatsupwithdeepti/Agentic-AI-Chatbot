@@ -1,53 +1,83 @@
+import os
 import streamlit as st
-from src.LanggraphAgenticAI.ui.streamlitui.loadui import LoadStreamlitUI
+
+from src.LanggraphAgenticAI.Graph.code_assistant_graph import CodeAssistantGraph
 from src.LanggraphAgenticAI.LLMs.groqllm import GroqLLM
-from src.LanggraphAgenticAI.Graph.graph_builder import GraphBuilder 
-from src.LanggraphAgenticAI.ui.streamlitui.display_result import DisplayResultStreamlit
+from src.LanggraphAgenticAI.tools.vector_memory import build_local_memory
+from src.LanggraphAgenticAI.UI.streamlitui.loadui import LoadStreamlitUI
+
 
 def load_langgraph_agenticai_app():
-    """
-    Loads and runs the LangGraph AgenticAI application with Streamlit UI.
-    This function initializes the UI, handles user input, configures the llm model,
-    sets up to the graph based on the selected use case, and displays the output while
-    implementing exception handling for robustness.
-    """
+    st.set_page_config(page_title="Agentic Code Assistant", layout="wide")
+    st.title("Agentic Code Assistant & Search Bot")
+    st.caption("Routes requests to uploaded project memory, live web search, or both; validate and review each answer.")
 
-    ## Load UI
-    ui = LoadStreamlitUI()
-    user_input=ui.load_streamlit_ui()
+    controls = LoadStreamlitUI().load_streamlit_ui()
+    if controls.get("TAVILY_API_KEY"):
+        os.environ["TAVILY_API_KEY"] = controls["TAVILY_API_KEY"]
+    uploads = st.sidebar.file_uploader(
+        "Add local project context",
+        type=["py", "md", "txt", "json", "toml", "yaml", "yml", "js", "ts", "tsx", "jsx", "java", "go", "rs"],
+        accept_multiple_files=True,
+        help="Files are indexed in memory for this session. Retrieved excerpts are sent to Groq when used to answer.",
+    )
+    uploaded = [(file.name, file.getvalue().decode("utf-8", errors="replace")) for file in uploads or []]
+    try:
+        memory = build_local_memory(uploaded)
+    except Exception as exc:
+        st.sidebar.error(f"Could not index local files: {exc}")
+        memory = None
+    if memory:
+        st.sidebar.success(f"Indexed {len(uploaded)} file(s) for this session.")
 
-    if not user_input:
-        st.error("Error: Failed to load user input from the UI.")
-        return
-    
-    user_message = st.chat_input("Enter your message:")
+    if "pending_review" in st.session_state:
+        pending = st.session_state.pending_review
+        st.subheader("Review the generated answer")
+        st.caption(f"Source route: {pending.get('route', 'unknown')}")
+        st.markdown(pending.get("draft", ""))
+        errors = pending.get("validation_errors", [])
+        if errors:
+            st.warning("Validation flagged: " + " ".join(errors))
+        if pending.get("search_error"):
+            st.warning("Live search was unavailable; the draft was generated without web results. Check your Tavily key or use local/general context.")
+        col_approve, col_revise = st.columns([1, 3])
+        with col_approve:
+            if st.button("Approve answer", type="primary"):
+                st.session_state.approved_answer = pending["draft"]
+                del st.session_state.pending_review
+                st.rerun()
+        with col_revise:
+            with st.form("review_feedback"):
+                feedback = st.text_input("Request a revision", placeholder="e.g. show the edge cases and add a test")
+                revise = st.form_submit_button("Revise answer")
+            if revise and feedback.strip():
+                try:
+                    llm = GroqLLM(controls).get_llm_model()
+                    graph = CodeAssistantGraph(llm, memory).compile()
+                    revised = graph.invoke({"request": pending["request"], "feedback": feedback.strip()})
+                    st.session_state.pending_review = revised | {"request": pending["request"]}
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not revise the answer: {exc}")
 
-    if user_message:
+    if "approved_answer" in st.session_state:
+        with st.chat_message("assistant"):
+            st.markdown(st.session_state.approved_answer)
+        if st.button("Clear approved answer"):
+            del st.session_state.approved_answer
+            st.rerun()
+
+    request = st.chat_input("Describe a coding problem or question")
+    if request:
         try:
-            ## Configure the LLM's
-            obj_llm_config=GroqLLM(user_controls_input=user_input)
-            model=obj_llm_config.get_llm_model()
-
-            if not model:
-                st.error("Error: LLM model could not be initialized")
+            if not controls.get("GROQ_API_KEY"):
+                st.error("Enter a Groq API key in the sidebar to continue.")
                 return
-            
-            ## Initialize and setup the graph based on use case
-            usecase=user_input.get("selected_usecase")
-
-            if not usecase:
-                st.error("Error: No use case selected.")
-                return
-            
-            ## Graph Builder
-            graph_builder=GraphBuilder(model)
-            try: 
-                graph=graph_builder.setup_graph(usecase)
-                DisplayResultStreamlit(usecase, graph, user_message).display_result_on_ui()
-            except Exception as e:
-                st.error(f"Error: Graph set up failed - {e}")
-
-        except Exception as e:
-            st.error(f"Error: Graph set up failed - {e}")
-            return
-    
+            llm = GroqLLM(controls).get_llm_model()
+            graph = CodeAssistantGraph(llm, memory).compile()
+            with st.spinner("Routing, retrieving evidence, and validating a draft…"):
+                result = graph.invoke({"request": request, "validation_attempts": 0})
+            st.session_state.pending_review = result | {"request": request}
+            st.rerun()
+        except Exception as exc:
+            st.error(f"The workflow could not complete: {exc}")

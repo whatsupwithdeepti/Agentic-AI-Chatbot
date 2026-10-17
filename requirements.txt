@@ -6,3 +6,4 @@ faiss-cpu
 streamlit
 tavily-python
 langchain_groq
+typing_extensions
